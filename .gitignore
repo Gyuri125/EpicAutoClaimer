@@ -1,0 +1,25 @@
+# Biztonsági kizárások (SOHA NE kerüljenek fel GitHubra)
+profiles/
+*.db
+*.sqlite3
+logs/
+
+# Virtuális környezet és PyCharm
+.venv/
+venv/
+ENV/
+.idea/
+
+# Python cache fájlok
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Operációs rendszer fájlok
+.DS_Store
+Thumbs.db
+desktop.ini
