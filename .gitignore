@@ -1,16 +1,35 @@
-# Biztonsági kizárások (SOHA NE kerüljenek fel GitHubra)
+# ==========================================
+# 1. BIZTONSÁG ÉS ADATVÉDELEM (Kritikus)
+# ==========================================
+# Böngésző profilok (bejelentkezési sütik, tokenek, session fájlok)
 profiles/
+**/profiles/
+profiles/*
+
+# SQLite adatbázisok és zárolások (helyi vásárlási előzmények)
 *.db
+*.db-journal
+*.db-wal
+*.sqlite
 *.sqlite3
+
+# Naplófájlok
+*.log
 logs/
 
-# Virtuális környezet és PyCharm
+# ==========================================
+# 2. VIRTUÁLIS KÖRNYEZET ÉS IDE BEÁLLÍTÁSOK
+# ==========================================
 .venv/
 venv/
 ENV/
+env/
 .idea/
+.vscode/
 
-# Python cache fájlok
+# ==========================================
+# 3. PYTHON ÉS PLAYWRIGHT GYORSÍTÓTÁR
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,7 +38,15 @@ build/
 dist/
 *.egg-info/
 
-# Operációs rendszer fájlok
+# Playwright teszt- és letöltési gyorsítótár
+.playwright/
+test-results/
+playwright-report/
+
+# ==========================================
+# 4. OPERÁCIÓS RENDSZER SZEMÉT
+# ==========================================
 .DS_Store
 Thumbs.db
 desktop.ini
+$RECYCLE.BIN/

@@ -6,6 +6,7 @@
 
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Playwright](https://img.shields.io/badge/Engine-Playwright-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)](https://playwright.dev/)
+[![GraphQL](https://img.shields.io/badge/API-GraphQL-E10098?style=for-the-badge&logo=graphql&logoColor=white)](https://graphql.org/)
 [![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-222222?style=for-the-badge)](LICENSE)
@@ -13,13 +14,16 @@
 <br />
 
 ```
-[ Epic Store API ] ──→ [ Scheduler Engine ] ──→ [ SQLite Ledger ]
-                              │
-                              ▼
-                 [ Headless Playwright Context ]
-                              │
-                              ▼
-                 [ Desktop Toast / Tray Service ]
+[ Epic Store GraphQL ] ──→ [ Scheduler Engine ] ──→ [ SQLite Ledger ]
+                                  │
+                                  ▼
+                     [ Anti-Bot Macro/Micro Jitter ]
+                                  │
+                                  ▼
+                   [ Isolated Chrome / Playwright ]
+                                  │
+                                  ▼
+                   [ Desktop Toast / Tray Service ]
 ```
 
 </div>
@@ -28,9 +32,9 @@
 
 ## Overview
 
-EpicAutoClaimer is an open-source background automation daemon built to monitor, queue, and claim weekly and promotional giveaway titles from the Epic Games Store without manual user interaction. 
+EpicAutoClaimer is an open-source background automation daemon built to monitor, queue, and claim weekly and promotional giveaway titles from the Epic Games Store without manual user interaction.
 
-It isolates user sessions using dedicated persistent browser profiles, allowing multiple accounts to be managed independently without session crossover, password exposure, or recurring 2FA prompts.
+It isolates user sessions using dedicated persistent browser profiles, allowing multiple accounts to be managed independently without session crossover, plain-text credential storage, or recurring 2FA prompts. Integrated behavioral randomization and native browser handoffs ensure operations blend seamlessly with organic user activity.
 
 ---
 
@@ -39,40 +43,50 @@ It isolates user sessions using dedicated persistent browser profiles, allowing 
 ```text
 +-------------------------------------------------------------------------+
 |                              SCHEDULER                                  |
-|   - Standard: Thursday intervals (17:00-20:00 CET)                      |
+|   - Standard: Thursday intervals (17:00+ CET)                           |
 |   - Holiday Mode: 24h daily polling (Dec 15 - Jan 05)                   |
+|   - Macro-Jitter: Random 10-90 min hold on drop detection               |
 +------------------------------------+------------------------------------+
                                      |
                                      ▼
 +-------------------------------------------------------------------------+
-|                          EPIC CATALOG PARSER                            |
-|   - Queries Akamai store endpoint (HTTP GET)                            |
-|   - Filters discount percentage == 0                                    |
-|   - Resolves product slugs & store URLs                                 |
+|                       EPIC STORE GRAPHQL CLIENT                         |
+|   - Direct query to [store.epicgames.com/graphql](https://store.epicgames.com/graphql)                         |
+|   - Filters category: "freegames" with discountPercentage == 0          |
+|   - Headless browser fallback if network inspection triggers            |
 +------------------------------------+------------------------------------+
                                      |
                                      ▼
 +-------------------------------------------------------------------------+
 |                        SQLITE IDEMPOTENCY LEDGER                        |
-|   - Checks (account_name, game_slug) composite key                      |
-|   - If record exists: SKIP → Prevents checkout loops                    |
-|   - If record missing: PROCEED to Claim Flow                            |
+|   - Verifies (account_name, game_slug) composite record                 |
+|   - If record exists: SKIP -> Eliminates redundant store operations     |
+|   - If record missing: PROCEED to staged account queue                  |
 +------------------------------------+------------------------------------+
                                      |
                                      ▼
 +-------------------------------------------------------------------------+
-|                        AUTOMATION ENGINE (Playwright)                   |
-|   - Loads isolated user session: ./profiles/{account}                   |
-|   - Traverses age verification gateways                                 |
-|   - Bypasses purchase iframe boundaries                                 |
-|   - Confirms order & writes success entry to database                   |
+|                       MULTI-ACCOUNT QUEUE RUNNER                        |
+|   - Shuffles profile execution order                                    |
+|   - Enforces sequential processing (one browser instance at a time)     |
+|   - Inserts 2-6 min cooldown between account transitions                |
++------------------------------------+------------------------------------+
+                                     |
+                                     ▼
++-------------------------------------------------------------------------+
+|                     AUTOMATION ENGINE (Playwright)                      |
+|   - Loads isolated persistent session: ./profiles/{account}             |
+|   - Strips automation flags (navigator.webdriver masked)                |
+|   - Employs micro-jitter (human delay intervals on clicks/navigation)   |
+|   - Traverses age verification gateways & checkout iframes              |
+|   - Confirms order & commits transaction to database                    |
 +------------------------------------+------------------------------------+
                                      |
                                      ▼
 +-------------------------------------------------------------------------+
 |                           NOTIFICATION LAYER                            |
-|   - Native Windows notification dispatch                                |
-|   - System tray icon status update                                      |
+|   - Dispatches native Windows desktop toast notifications               |
+|   - Updates system tray icon status                                     |
 +-------------------------------------------------------------------------+
 ```
 
@@ -81,19 +95,26 @@ It isolates user sessions using dedicated persistent browser profiles, allowing 
 ## Key Capabilities
 
 * **Multi-Account Profile Isolation**  
-  Each managed account operates within its own sandbox directory. Authentication cookies, local storage state, and device fingerprints remain isolated.
+  Each managed account operates within an independent sandbox directory (`./profiles/{account}`). Authentication cookies, tokens, and storage state remain strictly isolated.
 
-* **Non-Interactive Execution**  
-  Automated claiming runs entirely without user interaction. Scheduled background sweeps check store promotions periodically and claim eligible items automatically.
+* **Heuristic Anti-Detection & Behavioral Jitter**  
+  Eliminates machine-like timing patterns using multi-level randomization:
+  * **Macro-Jitter:** Pauses execution randomly between 10 and 90 minutes after a new promotion appears.
+  * **Queue Shuffling:** Randomizes account processing order on every run.
+  * **Inter-Account Cooldowns:** Introduces 2 to 6 minute pauses between accounts to simulate organic user handoffs.
+  * **Micro-Jitter:** Simulates human reaction times (2.0s to 8.0s delays) across button interactions and page transitions.
+
+* **Native Chrome Authentication Handoff**  
+  Initial logins and two-factor authentication (2FA) execute via native system Google Chrome processes without automated test flags (`--no-sandbox` omitted), preventing Arkose Labs puzzle lockouts.
+
+* **Direct GraphQL Catalog Integration**  
+  Interfaces directly with Epic's official GraphQL backend for fast, accurate promotion detection, backed by a headless browser scraping fallback.
 
 * **Idempotent Claim Tracking**  
-  Every confirmed claim is written to an internal SQLite ledger (`epic_bot.db`). The bot cross-references this index before launching browser instances, avoiding redundant load operations.
+  Every successful transaction is recorded in an embedded SQLite database (`epic_bot.db`). The engine cross-references this index before launching browser instances, avoiding redundant storefront operations.
 
 * **Adaptive Seasonal Scheduling**  
-  The scheduler dynamically switches between standard weekly operations (every Thursday evening) and seasonal daily giveaway sprints (December 15 through January 05).
-
-* **Zero Plain-Text Credentials**  
-  No account passwords or private keys are stored on disk. Accounts are initialized via manual login through a localized browser window, storing only authenticated session tokens.
+  Automatically switches between standard weekly runs (every Thursday evening) and holiday giveaway marathons (December 15 through January 05).
 
 ---
 
@@ -103,9 +124,9 @@ The client is optimized for multi-display workstations to eliminate disruption d
 
 | Attribute | Implementation Detail |
 |---|---|
-| **Window State** | Routine tasks run via background browser processes without stealing window or keyboard focus. |
-| **GUI Routing** | Configuration windows and manual login sessions dynamically snap to the active display workspace. |
-| **Notifications** | Alerts are routed through native OS notification channels, adhering to system focus assist and full-screen gaming rules. |
+| **Window State** | Scheduled claims run in managed browser contexts without stealing keyboard or window focus. |
+| **GUI Routing** | Configuration windows and manual login sessions anchor dynamically to the active display workspace. |
+| **Notifications** | Alerts are routed through native OS notification channels, adhering to system Focus Assist and full-screen gaming rules. |
 
 ---
 
@@ -125,21 +146,21 @@ The client is optimized for multi-display workstations to eliminate disruption d
 ```text
 EpicAutoClaimer/
 │
-├── profiles/                [Untracked] Local browser cache & session cookies
-│   ├── account_alpha/       Profile data for User Alpha
-│   └── account_beta/        Profile data for User Beta
+├── profiles/                [Untracked] Isolated browser sessions & tokens
+│   ├── account_alpha/       Local cache for User Alpha
+│   └── account_beta/        Local cache for User Beta
 │
 ├── src/
 │   ├── __init__.py
-│   ├── database.py          SQLite schema initialization and ledger operations
-│   ├── epic_api.py          Akamai REST endpoint client and payload parser
-│   ├── claimer.py           Playwright automation routines and iframe handlers
-│   ├── scheduler.py         Time logic (Thursday weekly vs. daily Holiday mode)
-│   └── gui.py               Tkinter account profile and session manager
+│   ├── database.py          SQLite schema initialization and ledger queries
+│   ├── epic_api.py          GraphQL client, query parser, and scraping fallback
+│   ├── claimer.py           Playwright automation routines and native Chrome login
+│   ├── scheduler.py         Date logic (Thursday drops vs. daily Holiday sprints)
+│   └── gui.py               Tkinter account manager interface
 │
 ├── main.py                  System tray entrypoint and background worker thread
 ├── requirements.txt         Python package dependencies
-├── .gitignore               Git security exclusion list (ignores db, profiles)
+├── .gitignore               Git security rules (excludes profiles, databases, logs)
 ├── LICENSE                  MIT License terms
 └── README.md                Technical documentation
 ```
@@ -151,6 +172,7 @@ EpicAutoClaimer/
 ### Prerequisites
 
 * Python 3.10 or higher
+* Google Chrome installed (recommended for native 2FA login handoff)
 * Git CLI
 
 ### 1. Repository Setup
@@ -163,13 +185,13 @@ cd EpicAutoClaimer
 ### 2. Environment Configuration
 
 ```bash
-python -m venv venv
+python -m venv .venv
 
-# Windows (cmd/PowerShell):
-venv\Scripts\activate
+# Windows (Command Prompt / PowerShell):
+.venv\Scripts\activate
 
 # macOS / Linux:
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ### 3. Dependency Installation
@@ -183,41 +205,3 @@ playwright install chromium
 
 ```bash
 python main.py
-```
-
----
-
-## Account Initialization
-
-> **Important:** Account initialization requires a one-time manual sign-in to bypass Cloudflare and verify two-factor authentication (2FA).
-
-1. Execute `python main.py`. An icon will populate within your system tray.
-2. Right-click the tray icon and select **Fiókok kezelése (Manage Accounts)**.
-3. Input an identifier into the field (e.g., `main_account`) and select **Hozzáadás (Add)**.
-4. Highlight the newly added profile and select **Belépés / 2FA beállítása**.
-5. Log into Epic Games via the opened browser instance, ensure **Remember Me** is checked, and complete any 2FA/Captcha requirements.
-6. Close the browser window once the Epic Store home page loads. The profile is now cached permanently in the local `./profiles/` directory.
-
----
-
-## Technical Stack
-
-* **Language:** Python 3.10+
-* **Browser Driver:** [Playwright](https://playwright.dev/python/) (Chromium)
-* **API Client:** [Requests](https://requests.readthedocs.io/)
-* **Tray Integration:** [Pystray](https://pystray.readthedocs.io/)
-* **Storage Engine:** SQLite3 (Native)
-* **Image Processing:** [Pillow](https://python-pillow.org/)
-* **Interface:** Tkinter (Native)
-
----
-
-## Legal & Compliance Notice
-
-This utility is developed strictly for educational and automation research purposes. Automating account interactions with storefronts may conflict with Epic Games' End User License Agreement (EULA) and Terms of Service. Use at your own discretion.
-
----
-
-## License
-
-Distributed under the MIT License. Refer to the [LICENSE](LICENSE) file for complete terms.
