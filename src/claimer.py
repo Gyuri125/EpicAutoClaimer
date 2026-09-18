@@ -1,21 +1,47 @@
 import os
+import re
 import time
 import random
-import logging
 import subprocess
+from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from src.database import is_game_claimed, mark_game_claimed
 
-logger = logging.getLogger("EpicClaimer")
+from src.database import get_accounts, is_game_claimed, mark_game_claimed
+from src.epic_api import fetch_free_games
+from src.logger import log
+
+DEBUG_PORT = 9222
+SCREENSHOTS_DIR = os.path.abspath("./debug_screenshots")
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+active_manual_process = None
 
 
-def human_delay(min_sec=2.0, max_sec=5.0):
-    """Emberi reakcióidőt szimuláló lebegőpontos véletlenszerű várakozás."""
+def is_manual_browser_open():
+    global active_manual_process
+    if active_manual_process is not None:
+        if active_manual_process.poll() is None:
+            return True
+        active_manual_process = None
+    return False
+
+
+def human_delay(min_sec=1.5, max_sec=3.0):
     time.sleep(random.uniform(min_sec, max_sec))
 
 
+def _save_debug_screenshot(page, title, tag="hiba"):
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        clean_title = re.sub(r'[\\/*?:"<>| ]', '_', title)
+        filepath = os.path.join(SCREENSHOTS_DIR, f"{clean_title}_{tag}_{timestamp}.png")
+        page.screenshot(path=filepath)
+        log(f"[Screenshot] Hibakép elmentve: {filepath}")
+    except Exception:
+        pass
+
+
 def _get_system_chrome_path():
-    """Megkeresi a valódi Google Chrome elérési útját a Windowson."""
     candidates = [
         os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
         os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
@@ -28,143 +54,241 @@ def _get_system_chrome_path():
 
 
 def open_manual_login(profile_dir):
-    """Natív böngésző indítása manuális belépéshez és 2FA kezeléshez."""
+    global active_manual_process
     chrome_path = _get_system_chrome_path()
 
-    if chrome_path:
-        print(f"[Login] Natív Google Chrome indítása: {chrome_path}")
-        cmd = [
-            chrome_path,
-            f"--user-data-dir={os.path.abspath(profile_dir)}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "https://store.epicgames.com/login"
-        ]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        print("[Login] Böngésző bezárva, a munkamenet elmentve.")
-    else:
-        print("[Login] Chrome nem található a szokásos helyen, Playwright indítása...")
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"]
-            )
-            page = context.new_page()
-            page.goto("https://store.epicgames.com/login")
-            for _ in range(180):
-                if context.pages and not page.is_closed():
-                    time.sleep(1)
-                else:
-                    break
-            context.close()
-
-
-def _launch_browser(playwright_instance, profile_dir, headless=False):
-    """Automatizált böngésző futtatása felkészítve a botvédelem ellen."""
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--start-maximized"
+    cmd = [
+        chrome_path or "chrome",
+        f"--user-data-dir={os.path.abspath(profile_dir)}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "https://store.epicgames.com/hu"
     ]
-    ignore_args = ["--enable-automation"]
+    active_manual_process = subprocess.Popen(cmd)
+    active_manual_process.wait()
+    active_manual_process = None
 
-    try:
-        context = playwright_instance.chromium.launch_persistent_context(
-            user_data_dir=profile_dir,
-            headless=headless,
-            channel="chrome",
-            args=launch_args,
-            ignore_default_args=ignore_args,
-            no_viewport=True
-        )
-    except Exception:
-        context = playwright_instance.chromium.launch_persistent_context(
-            user_data_dir=profile_dir,
-            headless=headless,
-            args=launch_args,
-            ignore_default_args=ignore_args,
-            no_viewport=True
-        )
 
-    context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    """)
-    return context
+def _handle_checkout_modal(page, acc_name, title):
+    target_button_texts = [
+        "Hozzáadás a könyvtárhoz",
+        "Add to Library",
+        "Megrendelés elküldése",
+        "Place Order"
+    ]
+
+    checkout_target = None
+    action_btn = None
+
+    for _ in range(15):
+        for btn_text in target_button_texts:
+            candidate = page.locator(f"button:has-text('{btn_text}')").first
+            if candidate.is_visible():
+                checkout_target = page
+                action_btn = candidate
+                break
+
+        if not checkout_target:
+            for frame in page.frames:
+                try:
+                    for btn_text in target_button_texts:
+                        candidate = frame.locator(f"button:has-text('{btn_text}')").first
+                        if candidate.is_visible():
+                            checkout_target = frame
+                            action_btn = candidate
+                            break
+                except Exception:
+                    pass
+                if checkout_target:
+                    break
+
+        if checkout_target:
+            break
+        time.sleep(1)
+
+    if not checkout_target or not action_btn:
+        _save_debug_screenshot(page, title, tag="nincs_checkout")
+        return False
+
+    body_text = checkout_target.locator("body").inner_text().lower()
+    if not any(term in body_text for term in ["0 ft", "0,00 ft", "0.00", "free", "ingyenes"]):
+        log(f"[{acc_name}] [VESZÉLY] Nem 0 Ft az ár! Folyamat megszakítva.")
+        _save_debug_screenshot(page, title, tag="nem_ingyenes")
+        return False
+
+    action_btn.click(force=True)
+    human_delay(2.0, 3.0)
+
+    for context in [page] + page.frames:
+        try:
+            accept_btn = context.locator("button:has-text('Elfogadom'), button:has-text('I Agree')").first
+            if accept_btn.is_visible(timeout=2500):
+                accept_btn.click(force=True)
+                human_delay(2.0, 3.0)
+                break
+        except Exception:
+            pass
+
+    for context in [page] + page.frames:
+        try:
+            if context.locator("text=/köszönjük|thank you/i").first.is_visible(timeout=4000):
+                return True
+        except Exception:
+            pass
+
+    for _ in range(8):
+        if page.locator("button:has-text('Könyvtárban'), button:has-text('In Library')").first.is_visible():
+            return True
+        time.sleep(1)
+
+    return False
 
 
 def claim_for_account(acc_name, profile_dir, games, notify_fn):
-    """Végrehajtja a beszerzéseket emberi reakcióidőkkel."""
-    with sync_playwright() as p:
-        context = _launch_browser(p, profile_dir, headless=False)
-        try:
+    unclaimed_games = []
+    for g in games:
+        if is_game_claimed(acc_name, g["slug"]):
+            log(f"[{acc_name}] ℹ️ Már beszerezve az adatbázis szerint: {g['title']}")
+        else:
+            unclaimed_games.append(g)
+
+    if not unclaimed_games:
+        log(f"[{acc_name}] ✅ MINDEN heti ingyenes játék ({len(games)} db) már megvan! Nincs szükség böngészőre.")
+        return
+
+    log(f"[{acc_name}] 🚀 {len(unclaimed_games)} db játék beszerzése indul...")
+
+    if is_manual_browser_open():
+        log(f"[{acc_name}] ⚠️ Zárd be a kézi bejelentkező böngészőt a beszerzés előtt!")
+        notify_fn("EpicAutoClaimer Hiba", f"Zárd be a böngészőablakot ({acc_name})!")
+        return
+
+    chrome_path = _get_system_chrome_path()
+    if not chrome_path:
+        log(f"[{acc_name}] Nem található Google Chrome.")
+        return
+
+    cmd = [
+        chrome_path,
+        f"--remote-debugging-port={DEBUG_PORT}",
+        f"--user-data-dir={os.path.abspath(profile_dir)}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--start-maximized"
+    ]
+    proc = subprocess.Popen(cmd)
+
+    try:
+        with sync_playwright() as p:
+            browser = None
+            for attempt in range(6):
+                try:
+                    time.sleep(1.2)
+                    browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{DEBUG_PORT}", timeout=10000)
+                    break
+                except Exception:
+                    if attempt == 5:
+                        log(f"[{acc_name}] Nem sikerült csatlakozni a böngészőhöz.")
+                        return
+
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
             page = context.pages[0] if context.pages else context.new_page()
 
-            for game in games:
+            for game in unclaimed_games:
                 slug = game["slug"]
                 title = game["title"]
 
-                if is_game_claimed(acc_name, slug):
-                    continue
-
                 try:
-                    print(f"[{acc_name}] Beszerzés kísérlete: {title}")
+                    log(f"[{acc_name}] 🌐 Betöltés: {title}")
                     page.goto(game["url"], wait_until="domcontentloaded", timeout=45000)
-                    human_delay(3.2, 6.5)
+                    human_delay(2.5, 3.5)
 
-                    # Korhatár modal kezelése
-                    age_gate = page.locator("button:has-text('Folytatás'), button:has-text('Continue')")
-                    if age_gate.is_visible(timeout=3000):
-                        age_gate.click()
-                        human_delay(1.5, 3.0)
+                    for sel in ["button:has-text('Folytatás')", "button:has-text('Continue')"]:
+                        btn = page.locator(sel)
+                        if btn.is_visible(timeout=1500):
+                            btn.click()
+                            human_delay(1.0, 1.5)
+                            break
 
-                    # 'Get' vagy 'Beszerzés' gomb leütése
-                    get_btn = page.locator("button[data-testid='purchase-cta-button']")
-                    if not get_btn.is_visible(timeout=5000):
-                        print(f"[{acc_name}] A Get gomb nem található: {title}")
+                    page.mouse.wheel(0, 300)
+                    human_delay(1.5, 2.0)
+
+                    in_library_loc = page.locator(
+                        "button:has-text('Könyvtárban'), button:has-text('In Library'), button:has-text('A könyvtárban')"
+                    ).first
+
+                    if in_library_loc.is_visible(timeout=3000):
+                        log(f"[{acc_name}] 📦 A játék már korábban a könyvtáradban volt: {title}")
+                        mark_game_claimed(acc_name, slug, title)
+                        continue
+
+                    get_btn = page.locator(
+                        "button[data-testid='purchase-cta-button'], aside button:has-text('Beszerzés'), aside button:has-text('Get')"
+                    ).first
+
+                    if not get_btn.is_visible(timeout=3000):
+                        log(f"[{acc_name}] ⚠️ Nem található a Beszerzés gomb: {title}")
+                        _save_debug_screenshot(page, title, tag="nincs_get_gomb")
                         continue
 
                     btn_text = get_btn.inner_text().strip().lower()
-                    if not any(k in btn_text for k in ["get", "beszerzés"]):
-                        print(f"[{acc_name}] Már megvan a könyvtárban: {title}")
+                    if "könyvtár" in btn_text or "library" in btn_text:
+                        log(f"[{acc_name}] 📦 Gomb alapján már a könyvtárban van: {title}")
                         mark_game_claimed(acc_name, slug, title)
                         continue
 
                     get_btn.click()
-                    human_delay(2.5, 4.8)
+                    log(f"[{acc_name}] 🛒 Kosár / Pénztár folyamat indítása...")
 
-                    # Rendelés gomb kezelése (főoldalon vagy iframe-ben)
-                    order_success = False
-                    order_btn = page.locator("button:has-text('Megrendelés elküldése'), button:has-text('Place Order')")
-
-                    if order_btn.is_visible(timeout=4000):
-                        order_btn.click()
-                        order_success = True
-                    else:
-                        for frame in page.frames:
-                            f_btn = frame.locator("button:has-text('Megrendelés elküldése'), button:has-text('Place Order')")
-                            if f_btn.is_visible(timeout=2000):
-                                f_btn.click()
-                                order_success = True
-                                break
-
-                    if order_success:
-                        human_delay(5.0, 8.0)
+                    if _handle_checkout_modal(page, acc_name, title):
                         mark_game_claimed(acc_name, slug, title)
                         notify_fn("EpicAutoClaimer", f"Sikeresen beszerezve: {title} ({acc_name})")
-                        print(f"[{acc_name}] Sikeres rendelés: {title}")
+                        log(f"[{acc_name}] 🎉 Tranzakció sikeres: {title}")
                     else:
-                        print(f"[{acc_name}] Nem sikerült a rendelés gombra kattintani: {title}")
+                        log(f"[{acc_name}] ❌ Nem sikerült beszerezni: {title}")
 
                 except PlaywrightTimeoutError:
-                    logger.warning(f"[{acc_name}] Időtúllépés: {title}")
-                except Exception as inner_err:
-                    logger.error(f"[{acc_name}] Hiba történt ({title}): {inner_err}")
+                    _save_debug_screenshot(page, title, tag="timeout")
+                    log(f"[{acc_name}] Időtúllépés ennél a játéknál: {title}")
+                except Exception as err:
+                    _save_debug_screenshot(page, title, tag="hiba")
+                    log(f"[{acc_name}] Hiba: {err}")
 
-        except Exception as outer_err:
-            logger.critical(f"[{acc_name}] Hiba a folyamatban: {outer_err}")
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+
+
+def claim_all_accounts(notify_fn=None):
+    """Minden fiókot sorban lekezelő központi függvény."""
+    notify = notify_fn if notify_fn else lambda t, m: None
+    log("==========================================")
+    log("⚡ ÖSSZES FIÓK BESZERZÉSE ELINDULT")
+    log("==========================================")
+
+    games = fetch_free_games()
+    if not games:
+        log("⚠️ Nem sikerült ingyenes játékokat találni az Epic API-ból.")
+        return
+
+    accounts = get_accounts()
+    if not accounts:
+        log("⚠️ Nincsenek mentett fiókok az adatbázisban!")
+        return
+
+    log(f"Talált aktív játékok ({len(games)} db): {[g['title'] for g in games]}")
+
+    for idx, (name, p_dir) in enumerate(accounts):
+        log(f"\n--- [{idx + 1}/{len(accounts)}] Fiók vizsgálata: {name} ---")
+        claim_for_account(name, p_dir, games, notify)
+        if idx < len(accounts) - 1:
+            log("Rövid szünet a következő fiók előtt (5 mp)...")
+            time.sleep(5)
+
+    log("\n==========================================")
+    log("✅ Összes fiók ellenőrzése befejeződött!")
+    log("==========================================")
+    notify("EpicAutoClaimer", "Az összes fiók ellenőrzése lezárult.")

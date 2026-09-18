@@ -1,19 +1,22 @@
 # ==========================================
 # 1. BIZTONSÁG ÉS ADATVÉDELEM (Kritikus)
 # ==========================================
-# Böngésző profilok (bejelentkezési sütik, tokenek, session fájlok)
+# Böngésző profilok (sütik, tokenek, session fájlok)
 profiles/
 **/profiles/
-profiles/*
 
-# SQLite adatbázisok és zárolások (helyi vásárlási előzmények)
+# Hibakeresési képernyőképek (érzékeny képi adatok)
+debug_screenshots/
+*.png
+
+# SQLite adatbázisok és tranzakciós naplók
 *.db
 *.db-journal
 *.db-wal
 *.sqlite
 *.sqlite3
 
-# Naplófájlok
+# Alkalmazás naplófájlok
 *.log
 logs/
 
@@ -38,13 +41,20 @@ build/
 dist/
 *.egg-info/
 
-# Playwright teszt- és letöltési gyorsítótár
+# Playwright gyorsítótárak
 .playwright/
 test-results/
 playwright-report/
 
 # ==========================================
-# 4. OPERÁCIÓS RENDSZER SZEMÉT
+# 4. FEJLESZTŐI SZEMÉT ÉS ÁTMENETI MENTÉSEK
+# ==========================================
+*régi*
+*.bak
+*.tmp
+
+# ==========================================
+# 5. OPERÁCIÓS RENDSZER FÁJLOK
 # ==========================================
 .DS_Store
 Thumbs.db

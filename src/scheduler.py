@@ -1,12 +1,20 @@
 from datetime import datetime
 
+# Nyilvántartja a legutolsó sikeres háttérvizsgálat idejét
+LAST_CHECK_TIME = None
 
-def should_execute_check():
+
+def is_claim_time_now():
+    global LAST_CHECK_TIME
     now = datetime.now()
-    # Karácsonyi időszak: Dec 15 - Jan 5 (minden nap aktív)
-    is_holiday_mode = (now.month == 12 and now.day >= 15) or (now.month == 1 and now.day <= 5)
+    LAST_CHECK_TIME = now
 
-    # Heti időszak: Csütörtök (weekday == 3) 17:00 után
-    is_thursday_drop = (now.weekday() == 3 and now.hour >= 17)
+    # Karácsonyi napi ciklus (dec. 15 - jan. 5)
+    is_xmas = (now.month == 12 and now.day >= 15) or (now.month == 1 and now.day <= 5)
+    # Csütörtök 17:00 utáni heti ciklus (3 = csütörtök)
+    is_thursday_evening = (now.weekday() == 3 and now.hour >= 17)
 
-    return is_holiday_mode or is_thursday_drop
+    return is_xmas or is_thursday_evening
+
+
+should_execute_check = is_claim_time_now
